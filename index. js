@@ -1,0 +1,131 @@
+const express = require('express');
+const cron = require('node-cron');
+const axios = require('axios');
+require('dotenv').config();
+
+const app = express();
+
+const MATON_API_KEY = process.env.MATON_API_KEY;
+const MATON_BASE_URL = 'https://api.maton.ai';
+
+async function fetchLatestEmails() {
+  try {
+    const response = await axios.get(
+      `${MATON_BASE_URL}/google-mail/gmail/v1/users/me/messages?maxResults=10`,
+      {
+        headers: {
+          'Authorization': `Bearer ${MATON_API_KEY}`
+        }
+      }
+    );
+
+    if (!response.data.messages) {
+      return { important: [], bitUniversity: [] };
+    }
+
+    const messageIds = response.data.messages.map(m => m.id);
+    const emailDetails = [];
+
+    for (const msgId of messageIds) {
+      try {
+        const detailResponse = await axios.get(
+          `${MATON_BASE_URL}/google-mail/gmail/v1/users/me/messages/${msgId}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+          {
+            headers: {
+              'Authorization': `Bearer ${MATON_API_KEY}`
+            }
+          }
+        );
+
+        const headers = detailResponse.data.payload?.headers || [];
+        const fromHeader = headers.find(h => h.name === 'From')?.value || 'Unknown';
+        const subjectHeader = headers.find(h => h.name === 'Subject')?.value || 'No Subject';
+        const dateHeader = headers.find(h => h.name === 'Date')?.value || 'Unknown Date';
+
+        emailDetails.push({
+          id: msgId,
+          from: fromHeader,
+          subject: subjectHeader,
+          date: dateHeader
+        });
+      } catch (err) {
+        console.error(`Error fetching message ${msgId}:`, err.message);
+      }
+    }
+
+    const important = emailDetails.filter(e =>
+      e.subject.toLowerCase().includes('important') ||
+      e.subject.toLowerCase().includes('urgent') ||
+      e.subject.toLowerCase().includes('action required')
+    );
+
+    const bitUniversity = emailDetails.filter(e =>
+      e.subject.toLowerCase().includes('bit') ||
+      e.from.toLowerCase().includes('bit') ||
+      e.subject.toLowerCase().includes('university')
+    );
+
+    return { important, bitUniversity, total: emailDetails.length };
+  } catch (error) {
+    console.error('Error fetching emails:', error.message);
+    return { error: error.message, important: [], bitUniversity: [] };
+  }
+}
+
+async function generateBriefing() {
+  const now = new Date();
+  const timeString = now.toLocaleString('id-ID', { timeZone: 'Asia/Jakarta' });
+
+  const emailData = await fetchLatestEmails();
+
+  let message = `
+🐶 MORNING BRIEFING (Mocha)
+═══════════════════════════
+Time: ${timeString}
+
+📧 Email Summary:
+─────────────────`;
+
+  if (emailData.error) {
+    message += `\nError fetching emails: ${emailData.error}`;
+  } else {
+    message += `\nTotal checked: ${emailData.total} latest emails`;
+
+    if (emailData.important.length > 0) {
+      message += `\n\n⚠️ Important Emails (${emailData.important.length}):`;
+      emailData.important.forEach(e => {
+        message += `\n  • ${e.subject}\n    From: ${e.from}`;
+      });
+    } else {
+      message += `\n✅ No important emails`;
+    }
+
+    if (emailData.bitUniversity.length > 0) {
+      message += `\n\n🎓 BIT University Emails (${emailData.bitUniversity.length}):`;
+      emailData.bitUniversity.forEach(e => {
+        message += `\n  • ${e.subject}\n    From: ${e.from}`;
+      });
+    } else {
+      message += `\n✅ No BIT University emails`;
+    }
+  }
+
+  message += `\n\nwoof 🐶`;
+
+  console.log(message);
+  return message;
+}
+
+cron.schedule('0 1 * * *', async () => {
+  console.log('Running morning briefing...');
+  await generateBriefing();
+});
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', message: 'Morning briefing service running' });
+});
+
+app.get('/briefing', async (req, res) => {
+  const briefing = await generateBriefing();
+  res.json({ briefing });
+});
